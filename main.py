@@ -14,6 +14,18 @@ def extract_cluster_name(requests):
     return " ".join(common_words)
 
 
+def get_representitives(model, clusters_embedded, centroids):
+
+    for label, embedded in clusters_embedded.items():
+        centroid = centroids[label]
+        similarities = model.similarity(embedded, [centroid])[0]
+
+        # Step 1: Pick the most central point
+        central_idx = np.argmax(similarities)
+        representatives = [cluster_requests[central_idx]]
+        chosen_indices = {central_idx}
+
+
 def init_clusters(embeddings, min_size):
     """Use DBSCAN to initialize clusters, calculate their centroids, and update cluster labels"""
 
@@ -110,7 +122,7 @@ def create_clusters(requests, min_size):
             print(f"Early stop after {iteration} iterations")
             break
 
-    return cluster_assignments
+    return cluster_assignments, clusters, centroids
 
 
 def analyze_unrecognized_requests(data_file, output_file, num_representatives, min_size):
@@ -127,7 +139,7 @@ def analyze_unrecognized_requests(data_file, output_file, num_representatives, m
     min_size = int(min_size)
     num_representatives = int(num_representatives)
 
-    cluster_assignments = create_clusters(requests, min_size)
+    cluster_assignments, clusters_embedded, centroids = create_clusters(requests, min_size)
 
     final_clusters = {}
     for i, cluster_id in enumerate(cluster_assignments):
