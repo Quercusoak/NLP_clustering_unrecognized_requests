@@ -1,9 +1,8 @@
 import json
+
 from compare_clustering_solutions import evaluate_clustering
 import pandas as pd
 import numpy as np
-from sklearn.cluster import DBSCAN
-from sklearn.feature_extraction.text import TfidfVectorizer
 from collections import Counter
 from sentence_transformers import SentenceTransformer
 
@@ -14,49 +13,50 @@ def extract_cluster_name(requests):
     return " ".join(common_words)
 
 
-def get_representitives(model, clusters_embedded, centroids):
+def get_representatives(num_representatives, clusters: dict[int, list], centroids: dict, requests):
+    """ Pick unique representing sentences from next to centroid and from edge of cluster. """
 
-    for label, embedded in clusters_embedded.items():
-        centroid = centroids[label]
-        similarities = model.similarity(embedded, [centroid])[0]
+    representatives =[]
+
+    # Select half of representatives from center of cluster
+    num_center = int(num_representatives/2+1)
+
+    # Select other half of representatives from the edges of the cluster
+    num_edge = num_representatives - num_center
+
+    cluster_labels = list(clusters.keys())
+
+    for cluster_label, embedded_requests in clusters.items():
+        centroid = centroids[cluster_label]
+        similarities = get_similarities_list(centroid, embedded_requests)  # each embedded request's proximity to centroid
+        # sort proximity to centroid desc
+        sorted_indexes = sorted(range(len(similarities)), key=lambda i: similarities[i], reverse=True)
 
         # Step 1: Pick the most central point
-        central_idx = np.argmax(similarities)
-        representatives = [cluster_requests[central_idx]]
-        chosen_indices = {central_idx}
+        # central_idx = np.argmax(similarities)
+        # representatives = [cluster_requests[central_idx]]
+        # chosen_indices = {central_idx}
 
 
-def init_clusters(embeddings, min_size):
-    """Use DBSCAN to initialize clusters, calculate their centroids, and update cluster labels"""
-
-    # Get initial clusters from DBSCAN
-    dbscan = DBSCAN(eps=0.3, min_samples=min_size)
-    labels = dbscan.fit_predict(embeddings)
-
-    # Initialize incremental clusters
-    clusters = {}
-    cluster_assignments = labels.tolist()
-
-    for i, label in enumerate(labels):
-        if label != -1:
-            clusters.setdefault(label, []).append(embeddings[i])
-
-    centroids = {label: np.mean(clusters[label], axis=0) for label in clusters}
-
-    return clusters, centroids, cluster_assignments
-
-
-def add_embedding_to_cluster(model, cluster_assignments, embeddings, clusters, centroids):
-    threshold = 0.65
+def add_embedding_to_cluster(embeddings_cluster_assignment, embeddings, clusters, centroids):
+    """
+    Using cosine similarity finds closest centroid to embedded request
+    If proximity to centroid higher than threshold - assign to cluster and recalculate centroid
+    otherwise the request initiates its own new cluster
+    """
+    threshold = 0.65  # Best value I found
 
     for i, embedding in enumerate(embeddings):
         # Get cosine similarity between embedded request and centroids
-        similarities = model.similarity(embedding, list(centroids.values()))[0]
-        max_index = np.argmax(similarities).item()  # index of the closest cluster
-        
-        # If embedded request is close to existing cluster - add and recalculate centroid
-        if similarities[max_index] >= threshold:
-            cluster_label = int(list(centroids.keys())[max_index])
+        # cluster_label, cosine_similarity = calc_similarity(embedding, centroids)
+
+        similarities = get_similarities_list(embedding, list(centroids.values()))
+        closest_centroid_idx = np.argmax(similarities).item()
+        cluster_label = int(list(centroids.keys())[closest_centroid_idx])
+        cosine_similarity = similarities[closest_centroid_idx]
+
+        # Check if request close enough to existing cluster, or it starts a new cluster as the centroid
+        if cosine_similarity >= threshold:
             clusters[cluster_label].append(embedding)
             centroids[cluster_label] = np.mean(clusters[cluster_label], axis=0)
         else:
@@ -65,7 +65,7 @@ def add_embedding_to_cluster(model, cluster_assignments, embeddings, clusters, c
             centroids[cluster_label] = embedding
 
         # Update embedding's cluster label
-        cluster_assignments[i] = cluster_label
+        embeddings_cluster_assignment[i] = cluster_label
     
 
 def remove_small_clusters(cluster_assignments, clusters, centroids, min_size):
@@ -81,48 +81,94 @@ def remove_small_clusters(cluster_assignments, clusters, centroids, min_size):
         centroids.pop(i)
 
 
+def get_similarities_list(embedding, centroids: list):
+    similarities = []
+    for centroid in centroids:
+        cosine = np.dot(embedding, centroid)
+        similarities.append(cosine)
+
+    return similarities
+
+
+def similarities_list(embedding, centroids):
+    similarities = []
+    for cluster, centroid in centroids.items():
+        cosine = np.dot(embedding, centroid)
+        similarities.append(cosine)
+
+    return similarities
+
+
+def calc_similarity(embedding, centroids):
+    """
+    The embeddings are normalized, and so are centroids
+    so for cosine similarity we calculate dot product and select closest centroid
+    and the cluster the centroid belongs to
+    """
+    closest_cluster = (0, -1)
+
+    for cluster, centroid in centroids.items():
+        cosine = np.dot(embedding, centroid)
+        if cosine > closest_cluster[1]:
+            closest_cluster = (cluster, cosine)
+
+    return closest_cluster
+
+
 def create_clusters(requests, min_size):
     """
-    generate clusters and centroids:
     iterate over embeddings, where each request can be assigned to an existing cluster
     (if its proximity to the cluster’s centroid meets some similarity threshold you will find),
     otherwise the request initiates its own new cluster
 
     perform additional iterations over all request embeddings, re-assigning them if needed
-    • till the algo convergence or till the max number of iterations is exhausted
+    till the algo convergence or till the max number of iterations is exhausted
     """
 
     # encode a set of unhandled requests using the sentence-transformers library
     model = SentenceTransformer("all-MiniLM-L6-v2")
-    embeddings = model.encode(requests)
+    embeddings = model.encode(requests, normalize_embeddings=True)
 
-    # Use DBSCAN to initialize clusters, and calculate their centroids
-    clusters, centroids, cluster_assignments = init_clusters(embeddings, min_size)
+    # Unassigned embeddings start with '-1' and then get cluster assignment
+    embeddings_cluster_assignment = [-1 for _ in range(len(embeddings))]
+
+    # Init first cluster (clustering algorithm can't start with empty centroids dict)
+    clusters = {0: []}
+    centroids = {0: embeddings[0]}
 
     # Incremental clustering refinement
     max_iterations = 10
     for iteration in range(max_iterations):
-        old_assignments = cluster_assignments.copy()
+        old_assignments = embeddings_cluster_assignment.copy()
 
         print(f'Iteration {iteration} start: {len(clusters)} clusters')
 
         # Iterate over embeddings and add them to clusters
-        add_embedding_to_cluster(model, cluster_assignments, embeddings, clusters, centroids)
+        add_embedding_to_cluster(embeddings_cluster_assignment, embeddings, clusters, centroids)
 
-        # remove clusters with less than min_size members
-        remove_small_clusters(cluster_assignments, clusters, centroids, min_size)
+        # Remove clusters with less than min_size members
+        remove_small_clusters(embeddings_cluster_assignment, clusters, centroids, min_size)
 
         print(f"Iteration {iteration} end: {len(clusters)} clusters")
 
-        # early stopping: if clusters aren't changed or added
+        # Early stopping: if clusters aren't changed or added between iterations
         max_changes = 5
-        num_changes = sum(1 for a, b in zip(old_assignments, cluster_assignments) if a != b)
+        num_changes = sum(1 for a, b in zip(old_assignments, embeddings_cluster_assignment) if a != b)
         print(f'num changes = {num_changes}')
         if num_changes <= max_changes:
             print(f"Early stop after {iteration} iterations")
             break
 
-    return cluster_assignments, clusters, centroids
+    return embeddings_cluster_assignment, clusters, centroids
+
+
+def evaluate(output_file):
+    with open(output_file, 'r') as sol_json_file:
+        sol = json.load(sol_json_file)
+
+    sol_clusters = sol['cluster_list']
+    sol_unclustered = sol['unclustered']
+    print(f'')
 
 
 def analyze_unrecognized_requests(data_file, output_file, num_representatives, min_size):
@@ -142,9 +188,12 @@ def analyze_unrecognized_requests(data_file, output_file, num_representatives, m
     cluster_assignments, clusters_embedded, centroids = create_clusters(requests, min_size)
 
     final_clusters = {}
+    unclustered = []
     for i, cluster_id in enumerate(cluster_assignments):
         if cluster_id != -1:
             final_clusters.setdefault(cluster_id, []).append(requests[i])
+        else:
+            unclustered.append(requests[i])
 
     cluster_list = []
     for cluster_id, reqs in final_clusters.items():
@@ -156,12 +205,10 @@ def analyze_unrecognized_requests(data_file, output_file, num_representatives, m
             "representatives": representatives
         })
 
-    outliers_sentences = [requests[i] for i, label in enumerate(cluster_assignments) if label == -1]
-
-    print(f'num clusters: {len(final_clusters)},num outliers: {len(outliers_sentences)}')
+    print(f'num clusters: {len(final_clusters)},num outliers: {len(unclustered)}')
 
     # only clusters with size >= min_size are considered as generated clusters
-    result = {"cluster_list": cluster_list, "unclustered": outliers_sentences}
+    result = {"cluster_list": cluster_list, "unclustered": unclustered}
 
     with open(output_file, "w", encoding="utf-8") as f:
         json.dump(result, f, indent=4)
@@ -180,4 +227,4 @@ if __name__ == '__main__':
 
     # todo: evaluate your clustering solution against the provided one
     # evaluate_clustering(config['example_solution_file'], config['example_solution_file'])  # invocation example
-    #evaluate_clustering(config['example_solution_file'], config['output_file'])
+    evaluate_clustering(config['example_solution_file'], config['output_file'])
