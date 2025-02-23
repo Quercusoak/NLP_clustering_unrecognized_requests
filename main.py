@@ -13,29 +13,48 @@ def extract_cluster_name(requests):
     return " ".join(common_words)
 
 
-def get_representatives(num_representatives, clusters: dict[int, list], centroids: dict, requests):
+def get_cluster_representatives(num_representatives, embedded_requests, centroid, requests):
     """ Pick unique representing sentences from next to centroid and from edge of cluster. """
 
-    representatives =[]
+    representatives = []
+
+    # Get each embedded request's proximity to centroid
+    similarities = get_similarities_list(centroid, embedded_requests)
+
+    # Map cosine similarity score to index for correlation to requests list
+    similarities_indexes = [(idx, score) for idx, score in enumerate(similarities)]
+
+    num_requests = len(similarities_indexes)
+
+    # sort proximity to centroid desc
+    sorted_indexes = sorted(range(num_requests), key=lambda i: similarities_indexes[i][1], reverse=True)
+
+    other_option = set()
+    for idx in sorted_indexes:
+        r = requests[idx]
+        other_option.add(r)
+        if len(other_option) >= num_representatives:
+            break
 
     # Select half of representatives from center of cluster
-    num_center = int(num_representatives/2+1)
+    num_center = int(num_representatives / 2 + 1)
+    a = 0
+    while len(representatives) < num_center:
+        res = requests[sorted_indexes[a]]
+        if res not in representatives:
+            representatives.append(res)
+        a+=1
 
     # Select other half of representatives from the edges of the cluster
-    num_edge = num_representatives - num_center
+    # num_edge = num_representatives - num_center
+    a=0
+    while len(representatives) < num_representatives:
+        res = requests[num_requests - 1 - a]
+        if res not in representatives:
+            representatives.append(res)
+        a+=1
 
-    cluster_labels = list(clusters.keys())
-
-    for cluster_label, embedded_requests in clusters.items():
-        centroid = centroids[cluster_label]
-        similarities = get_similarities_list(centroid, embedded_requests)  # each embedded request's proximity to centroid
-        # sort proximity to centroid desc
-        sorted_indexes = sorted(range(len(similarities)), key=lambda i: similarities[i], reverse=True)
-
-        # Step 1: Pick the most central point
-        # central_idx = np.argmax(similarities)
-        # representatives = [cluster_requests[central_idx]]
-        # chosen_indices = {central_idx}
+    return representatives
 
 
 def add_embedding_to_cluster(embeddings_cluster_assignment, embeddings, clusters, centroids):
@@ -48,15 +67,12 @@ def add_embedding_to_cluster(embeddings_cluster_assignment, embeddings, clusters
 
     for i, embedding in enumerate(embeddings):
         # Get cosine similarity between embedded request and centroids
-        # cluster_label, cosine_similarity = calc_similarity(embedding, centroids)
-
-        similarities = get_similarities_list(embedding, list(centroids.values()))
-        closest_centroid_idx = np.argmax(similarities).item()
-        cluster_label = int(list(centroids.keys())[closest_centroid_idx])
-        cosine_similarity = similarities[closest_centroid_idx]
+        cluster_label, cosine_similarity = calc_similarity(embedding, centroids)
 
         # Check if request close enough to existing cluster, or it starts a new cluster as the centroid
         if cosine_similarity >= threshold:
+            if embeddings_cluster_assignment[i] == cluster_label:
+                continue
             clusters[cluster_label].append(embedding)
             centroids[cluster_label] = np.mean(clusters[cluster_label], axis=0)
         else:
@@ -90,20 +106,10 @@ def get_similarities_list(embedding, centroids: list):
     return similarities
 
 
-def similarities_list(embedding, centroids):
-    similarities = []
-    for cluster, centroid in centroids.items():
-        cosine = np.dot(embedding, centroid)
-        similarities.append(cosine)
-
-    return similarities
-
-
 def calc_similarity(embedding, centroids):
     """
-    The embeddings are normalized, and so are centroids
-    so for cosine similarity we calculate dot product and select closest centroid
-    and the cluster the centroid belongs to
+    The embeddings and centroids are normalized, so for cosine similarity we calculate dot product
+    returns closest cluster and similarity value
     """
     closest_cluster = (0, -1)
 
@@ -189,16 +195,16 @@ def analyze_unrecognized_requests(data_file, output_file, num_representatives, m
 
     final_clusters = {}
     unclustered = []
-    for i, cluster_id in enumerate(cluster_assignments):
-        if cluster_id != -1:
-            final_clusters.setdefault(cluster_id, []).append(requests[i])
+    for i, cluster in enumerate(cluster_assignments):
+        if cluster != -1:
+            final_clusters.setdefault(cluster, []).append(requests[i])
         else:
             unclustered.append(requests[i])
 
     cluster_list = []
-    for cluster_id, reqs in final_clusters.items():
+    for cluster, reqs in final_clusters.items():
         cluster_name = extract_cluster_name(reqs)
-        representatives = reqs[:num_representatives]
+        representatives = get_cluster_representatives(num_representatives, clusters_embedded[cluster], centroids[cluster], reqs)
         cluster_list.append({
             "cluster_name": cluster_name,
             "requests": reqs,
