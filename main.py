@@ -3,35 +3,34 @@ import json
 from compare_clustering_solutions import evaluate_clustering
 import pandas as pd
 import numpy as np
-from collections import Counter
 from sentence_transformers import SentenceTransformer
+from keybert import KeyBERT
 
 
-def extract_cluster_name(requests):
-    words = " ".join(requests).split()
-    common_words = [word for word, _ in Counter(words).most_common(3)]
-    return " ".join(common_words)
+def extract_cluster_name(sentence_model, requests):
+    kw_model = KeyBERT(model=sentence_model)
+    doc = " ".join(requests)
+    cluster_name = kw_model.extract_keywords(doc, keyphrase_ngram_range=(1, 2), stop_words='english', top_n=1)
+
+    return cluster_name[0][0]
 
 
-def get_cluster_representatives(num_representatives, embedded_requests, centroid, requests):
+def get_cluster_representatives(num_representatives, embedded_requests, centroid):
     """ Pick unique representing sentences from next to centroid and from edge of cluster. """
 
     representatives = []
 
-    # Get each embedded request's proximity to centroid
-    similarities = get_similarities_list(centroid, embedded_requests)
+    # Get each request's proximity to centroid
+    similarities = get_proximity_to_centroid(centroid, embedded_requests)
+    requests_sorted = [req for _, req in sorted(similarities, key=lambda x: x[0], reverse=True)]
 
-    # Map cosine similarity score to index for correlation to requests list
-    similarities_indexes = [(idx, score) for idx, score in enumerate(similarities)]
-
-    num_requests = len(similarities_indexes)
+    num_requests = len(requests_sorted)
 
     # sort proximity to centroid desc
-    sorted_indexes = sorted(range(num_requests), key=lambda i: similarities_indexes[i][1], reverse=True)
+    # sorted_indexes = sorted(range(num_requests), key=lambda i: similarities_indexes[i][1], reverse=True)
 
     other_option = set()
-    for idx in sorted_indexes:
-        r = requests[idx]
+    for r in requests_sorted:
         other_option.add(r)
         if len(other_option) >= num_representatives:
             break
@@ -40,7 +39,7 @@ def get_cluster_representatives(num_representatives, embedded_requests, centroid
     num_center = int(num_representatives / 2 + 1)
     a = 0
     while len(representatives) < num_center:
-        res = requests[sorted_indexes[a]]
+        res = requests_sorted[a]
         if res not in representatives:
             representatives.append(res)
         a+=1
@@ -49,7 +48,7 @@ def get_cluster_representatives(num_representatives, embedded_requests, centroid
     # num_edge = num_representatives - num_center
     a=0
     while len(representatives) < num_representatives:
-        res = requests[num_requests - 1 - a]
+        res = requests_sorted[num_requests - 1 - a]
         if res not in representatives:
             representatives.append(res)
         a+=1
@@ -97,11 +96,11 @@ def remove_small_clusters(cluster_assignments, clusters, centroids, min_size):
         centroids.pop(i)
 
 
-def get_similarities_list(embedding, centroids: list):
+def get_proximity_to_centroid(centroid, embeddings: list):
     similarities = []
-    for centroid in centroids:
-        cosine = np.dot(embedding, centroid)
-        similarities.append(cosine)
+    for request, embedding in embeddings:
+        cosine = np.dot(centroid, embedding)
+        similarities.append((cosine, request))
 
     return similarities
 
@@ -121,7 +120,7 @@ def calc_similarity(embedding, centroids):
     return closest_cluster
 
 
-def create_clusters(requests, min_size):
+def create_clusters(model, requests, min_size):
     """
     iterate over embeddings, where each request can be assigned to an existing cluster
     (if its proximity to the cluster’s centroid meets some similarity threshold you will find),
@@ -130,17 +129,18 @@ def create_clusters(requests, min_size):
     perform additional iterations over all request embeddings, re-assigning them if needed
     till the algo convergence or till the max number of iterations is exhausted
     """
-
     # encode a set of unhandled requests using the sentence-transformers library
-    model = SentenceTransformer("all-MiniLM-L6-v2")
     embeddings = model.encode(requests, normalize_embeddings=True)
 
     # Unassigned embeddings start with '-1' and then get cluster assignment
     embeddings_cluster_assignment = [-1 for _ in range(len(embeddings))]
 
+    requests_to_embeddings = [(r, e) for r, e in zip(requests, embeddings)]
+
     # Init first cluster (clustering algorithm can't start with empty centroids dict)
-    clusters = {0: []}
+    clusters = {0: [requests_to_embeddings[0]]}
     centroids = {0: embeddings[0]}
+    embeddings_cluster_assignment[0] = 0
 
     # Incremental clustering refinement
     max_iterations = 10
@@ -150,7 +150,33 @@ def create_clusters(requests, min_size):
         print(f'Iteration {iteration} start: {len(clusters)} clusters')
 
         # Iterate over embeddings and add them to clusters
-        add_embedding_to_cluster(embeddings_cluster_assignment, embeddings, clusters, centroids)
+        # add_embedding_to_cluster(embeddings_cluster_assignment, embeddings, clusters, centroids)
+        threshold = 0.65  # Best value I found
+
+        for i, request_embedding in enumerate(requests_to_embeddings):
+            request, embedding = request_embedding
+            prev_cluster = embeddings_cluster_assignment[i]
+
+            # Get cosine similarity between embedded request and centroids
+            cluster_label, cosine_similarity = calc_similarity(embedding, centroids)
+
+            # If assignment unchanged - continue
+            if cosine_similarity >= threshold and prev_cluster == cluster_label:
+                continue
+
+            # Remove previous assignment if there was one
+            if prev_cluster != -1:
+                clusters[prev_cluster].remove(request_embedding)
+
+            # If request is not close enough to existing cluster, it starts a new cluster
+            if cosine_similarity < threshold:
+                cluster_label = int(max(clusters.keys(), default=-1) + 1)
+
+            # Update request's cluster assignment, add to cluster and recalculate centroid
+            embeddings_cluster_assignment[i] = cluster_label
+            clusters.setdefault(cluster_label, []).append(request_embedding)
+            cluster_embeddings = [e for _, e in clusters[cluster_label]]
+            centroids[cluster_label] = np.mean(cluster_embeddings, axis=0)
 
         # Remove clusters with less than min_size members
         remove_small_clusters(embeddings_cluster_assignment, clusters, centroids, min_size)
@@ -188,30 +214,25 @@ def analyze_unrecognized_requests(data_file, output_file, num_representatives, m
     csvfile = pd.read_csv(data_file)
     requests = csvfile['text'].values.tolist()
 
+    # encode a set of unhandled requests using the sentence-transformers library
+    model = SentenceTransformer("all-MiniLM-L6-v2")
+
     min_size = int(min_size)
     num_representatives = int(num_representatives)
 
-    cluster_assignments, clusters_embedded, centroids = create_clusters(requests, min_size)
+    cluster_assignments, clusters, centroids = create_clusters(model, requests, min_size)
 
-    final_clusters = {}
-    unclustered = []
-    for i, cluster in enumerate(cluster_assignments):
-        if cluster != -1:
-            final_clusters.setdefault(cluster, []).append(requests[i])
-        else:
-            unclustered.append(requests[i])
+    unclustered = [requests[i] for i, cluster in enumerate(cluster_assignments) if cluster == -1]
 
     cluster_list = []
-    for cluster, reqs in final_clusters.items():
-        cluster_name = extract_cluster_name(reqs)
-        representatives = get_cluster_representatives(num_representatives, clusters_embedded[cluster], centroids[cluster], reqs)
+    for cluster, reqs_embedding in clusters.items():
+        cluster_name = extract_cluster_name(model, [req for req, _ in reqs_embedding])
+        representatives = get_cluster_representatives(num_representatives, reqs_embedding, centroids[cluster])
         cluster_list.append({
             "cluster_name": cluster_name,
-            "requests": reqs,
+            "requests": [req for req, _ in reqs_embedding],
             "representatives": representatives
         })
-
-    print(f'num clusters: {len(final_clusters)},num outliers: {len(unclustered)}')
 
     # only clusters with size >= min_size are considered as generated clusters
     result = {"cluster_list": cluster_list, "unclustered": unclustered}
