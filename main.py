@@ -26,16 +26,21 @@ def get_cluster_representatives(model, num_representatives, embeddings, requests
     embeddings = np.array(embeddings)
 
     relevance_scores = model.similarity(centroid, embeddings)[0]
+    embedding_similarities = model.similarity(embeddings, embeddings)
 
     # Select request closest to the centroid
     selected_idx = [np.argmax(relevance_scores).item()]
     representatives.append(requests[selected_idx[0]])
 
-    remaining_idx = list(set(range(len(requests))) - set(selected_idx))
+    # remaining_idx = list(set(range(len(requests))) - set(selected_idx))
+    remaining_idx = [i for i in range(len(embeddings)) if i != selected_idx[0]]
 
     # Diversity score is min similarity to selected requests
 
     for _ in range(num_representatives - 1):
+        # candidate_similarities = relevance_scores[remaining_idx]
+        # a = embedding_similarities[remaining_idx][:, selected_idx]
+        # target_similarities = max(embedding_similarities[remaining_idx][:, selected_idx])
 
         # Compute diversity score: min similarity to already selected requests
         diversity_scores = np.array([
@@ -45,6 +50,7 @@ def get_cluster_representatives(model, num_representatives, embeddings, requests
 
         # Select request by MMR score: balance between relevance and diversity
         mmr_scores = (1 - diversity) * relevance_scores[remaining_idx] - diversity * diversity_scores
+        # mmr_scores = (1 - diversity) * candidate_similarities - diversity * target_similarities.reshape(-1, 1)
         mmr_idx = remaining_idx[np.argmax(mmr_scores)]
 
         selected_idx.append(mmr_idx)
