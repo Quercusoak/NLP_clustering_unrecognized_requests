@@ -1,11 +1,11 @@
 import json
-from operator import itemgetter
 
 from compare_clustering_solutions import evaluate_clustering
 import pandas as pd
 import numpy as np
 from sentence_transformers import SentenceTransformer, SimilarityFunction
 from keybert import KeyBERT
+import torch
 
 
 def extract_cluster_name(kw_model, requests, embeddings):
@@ -38,19 +38,19 @@ def get_cluster_representatives(model, num_representatives, embeddings, requests
     # Diversity score is min similarity to selected requests
 
     for _ in range(num_representatives - 1):
-        # candidate_similarities = relevance_scores[remaining_idx]
-        # a = embedding_similarities[remaining_idx][:, selected_idx]
-        # target_similarities = max(embedding_similarities[remaining_idx][:, selected_idx])
+        candidate_similarities = relevance_scores[remaining_idx]
+        a = embedding_similarities[remaining_idx][:, selected_idx]
+        target_similarities = torch.min(embedding_similarities[remaining_idx][:, selected_idx], dim=1).values
 
-        # Compute diversity score: min similarity to already selected requests
-        diversity_scores = np.array([
-            min(model.similarity(embeddings[i], embeddings[selected_idx])[0])
-            for i in remaining_idx
-        ])
+        # # Compute diversity score: min similarity to already selected requests
+        # diversity_scores = np.array([
+        #     min(model.similarity(embeddings[i], embeddings[selected_idx])[0])
+        #     for i in remaining_idx
+        # ])
 
         # Select request by MMR score: balance between relevance and diversity
-        mmr_scores = (1 - diversity) * relevance_scores[remaining_idx] - diversity * diversity_scores
-        # mmr_scores = (1 - diversity) * candidate_similarities - diversity * target_similarities.reshape(-1, 1)
+        # mmr_scores = (1 - diversity) * relevance_scores[remaining_idx] - diversity * diversity_scores
+        mmr_scores = (1 - diversity) * candidate_similarities - diversity * target_similarities
         mmr_idx = remaining_idx[np.argmax(mmr_scores)]
 
         selected_idx.append(mmr_idx)
