@@ -8,8 +8,7 @@ from sentence_transformers import SentenceTransformer, SimilarityFunction
 from keybert import KeyBERT
 
 
-def extract_cluster_name(sentence_model, requests, embeddings):
-    kw_model = KeyBERT(model=sentence_model)
+def extract_cluster_name(kw_model, requests, embeddings):
     # doc = " ".join(requests)
     cluster_name = kw_model.extract_keywords(
         requests, keyphrase_ngram_range=(1, 2), stop_words='english', top_n=1, doc_embeddings=embeddings)
@@ -196,6 +195,7 @@ def analyze_unrecognized_requests(data_file, output_file, num_representatives, m
 
     # encode a set of unhandled requests using the sentence-transformers library
     model = SentenceTransformer("all-MiniLM-L6-v2", similarity_fn_name=SimilarityFunction.DOT_PRODUCT)
+    kw_model = KeyBERT(model=model)
 
     min_size = int(min_size)
     num_representatives = int(num_representatives)
@@ -208,11 +208,11 @@ def analyze_unrecognized_requests(data_file, output_file, num_representatives, m
     for cluster, reqs_embedding in clusters.items():
         r = [req for req, _ in reqs_embedding]
         e = [em for _, em in reqs_embedding]
-        cluster_name = extract_cluster_name(model, r, e)
+        cluster_name = extract_cluster_name(kw_model, r, e)
         representatives = get_cluster_representatives(model,num_representatives, e,r, centroids[cluster])
         cluster_list.append({
             "cluster_name": cluster_name,
-            "requests": [req for req, _ in reqs_embedding],
+            "requests": r,
             "representatives": representatives
         })
 
