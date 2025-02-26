@@ -1,10 +1,9 @@
 import json
 from collections import Counter
 
+from pandas import read_csv
 from sklearn.feature_extraction.text import CountVectorizer
-
 from compare_clustering_solutions import evaluate_clustering
-import pandas as pd
 import numpy as np
 from sentence_transformers import SentenceTransformer, SimilarityFunction
 import torch
@@ -17,14 +16,14 @@ def cluster_name_ngrams(sentences, vectorizer):
     ngram_counts = Counter(dict(zip(vectorizer.get_feature_names_out(), X.toarray().sum(axis=0))))
     sorted_ngrams = sorted(ngram_counts.items(), key=lambda x: (-len(x[0].split()), -x[1]))
 
-    best = sorted_ngrams[0]
+    best = sorted_ngrams[0]  # Select most frequent trigram - prefer trigram to bigram
 
-    # Get the most frequent n-grams
+    # Get the most frequent n-grams (most likely a bigram) and check if it is significantly more frequent
     most = ngram_counts.most_common(1)[0]
-    # if most[1] > 3 * (best[1]):
-    #     best = most
+    if most[1] > 3 * (best[1]):
+        best = most
 
-    return best[0], int(best[1]), most[0], int(most[1])
+    return best[0]
 
 
 def get_cluster_representatives(model, num_representatives, embeddings, requests, centroid, diversity=0.5):
@@ -68,7 +67,7 @@ def add_embedding_to_cluster(embeddings_cluster_assignment, requests_to_embeddin
     If proximity to centroid higher than threshold - assign to cluster and recalculate centroid
     otherwise the request initiates its own new cluster
     """
-    threshold = 0.64  # Best value I found
+    threshold = 0.65  # Best value I found
 
     for i, request_embedding in enumerate(requests_to_embeddings):
         request, embedding = request_embedding
@@ -164,7 +163,6 @@ def create_clusters(embeddings, requests, min_size):
         if num_changes <= min_changes:
             print(f"Early stop after {iteration} iterations")
             break
-        print(f"Iteration {iteration}: {len(clusters)} clusters, {num_changes} reassigned")  # todo: delete
 
     # Create list of all unclustered requests
     unclustered = [requests[i] for i, cluster in enumerate(embeddings_cluster_assignment) if cluster == -1]
@@ -174,7 +172,7 @@ def create_clusters(embeddings, requests, min_size):
 
 def analyze_unrecognized_requests(data_file, output_file, num_representatives, min_size):
     # read data file into requests list
-    csvfile = pd.read_csv(data_file)
+    csvfile = read_csv(data_file)
     requests = csvfile['text'].values.tolist()
 
     # Encode a set of unhandled requests using the sentence-transformers library
@@ -191,12 +189,9 @@ def analyze_unrecognized_requests(data_file, output_file, num_representatives, m
         r = [req for req, _ in reqs_embedding]
         e = [em for _, em in reqs_embedding]
         representatives = get_cluster_representatives(model, int(num_representatives), e, r, centroids[cluster])
-        cluster_name,score, ngram_name,s2 = cluster_name_ngrams(r, vectorizer)
+        cluster_name= cluster_name_ngrams(r, vectorizer)
         cluster_list.append({
             "cluster_name": cluster_name,
-            "cluster_score": score,
-            "most_frequent": ngram_name,
-            "most_frequent_score": s2,
             "requests": r,
             "representatives": representatives
         })
@@ -219,6 +214,4 @@ if __name__ == '__main__':
                                   config['num_of_representatives'],
                                   config['min_cluster_size'])
 
-    # todo: evaluate your clustering solution against the provided one
-    # evaluate_clustering(config['example_solution_file'], config['example_solution_file'])  # invocation example
     evaluate_clustering(config['example_solution_file'], config['output_file'])
