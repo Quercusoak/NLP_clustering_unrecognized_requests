@@ -7,15 +7,13 @@ from compare_clustering_solutions import evaluate_clustering
 import pandas as pd
 import numpy as np
 from sentence_transformers import SentenceTransformer, SimilarityFunction
-from keybert import KeyBERT
 import torch
 
 
 def cluster_name_ngrams(sentences, vectorizer):
-    # Initialize CountVectorizer with n-gram range
     X = vectorizer.fit_transform(sentences)
 
-    # Get feature names (n-grams) and their counts
+    # Get feature names (n-grams) and their counts, sort by first trigrams then bigrams
     ngram_counts = Counter(dict(zip(vectorizer.get_feature_names_out(), X.toarray().sum(axis=0))))
     sorted_ngrams = sorted(ngram_counts.items(), key=lambda x: (-len(x[0].split()), -x[1]))
 
@@ -23,18 +21,10 @@ def cluster_name_ngrams(sentences, vectorizer):
 
     # Get the most frequent n-grams
     most = ngram_counts.most_common(1)[0]
-    if most[1] > 3 * (best[1]):
-        best = most
+    # if most[1] > 3 * (best[1]):
+    #     best = most
 
-    return best[0]
-
-
-def extract_cluster_name(kw_model, sentences, vectorizer):
-    doc = " ".join(sentences)
-    cluster_name = kw_model.extract_keywords(
-        doc, vectorizer=vectorizer, top_n=1)
-
-    return cluster_name[0][0]
+    return best[0], int(best[1]), most[0], int(most[1])
 
 
 def get_cluster_representatives(model, num_representatives, embeddings, requests, centroid, diversity=0.5):
@@ -138,7 +128,7 @@ def init_clusters(embeddings, requests):
     # Unassigned embeddings start with '-1' and then get cluster assignment
     embeddings_cluster_assignment = [-1 for _ in range(len(embeddings))]
 
-    # Tuples of request and it's embedding for quick and clear connection
+    # Tuples of a request and it's embedding for quick and clear connection
     requests_to_embeddings = [(r, e) for r, e in zip(requests, embeddings)]
 
     # Init first cluster (clustering algorithm can't start with empty centroids dict)
@@ -176,7 +166,10 @@ def create_clusters(embeddings, requests, min_size):
             break
         print(f"Iteration {iteration}: {len(clusters)} clusters, {num_changes} reassigned")  # todo: delete
 
-    return embeddings_cluster_assignment, clusters, centroids
+    # Create list of all unclustered requests
+    unclustered = [requests[i] for i, cluster in enumerate(embeddings_cluster_assignment) if cluster == -1]
+
+    return unclustered, clusters, centroids
 
 
 def analyze_unrecognized_requests(data_file, output_file, num_representatives, min_size):
@@ -187,11 +180,10 @@ def analyze_unrecognized_requests(data_file, output_file, num_representatives, m
     # Encode a set of unhandled requests using the sentence-transformers library
     model = SentenceTransformer("all-MiniLM-L6-v2", similarity_fn_name=SimilarityFunction.DOT_PRODUCT)
     embeddings = model.encode(requests, normalize_embeddings=True)
-    kw_model = KeyBERT(model=model)
 
-    cluster_assignments, clusters, centroids = create_clusters(embeddings, requests, int(min_size))
+    unclustered, clusters, centroids = create_clusters(embeddings, requests, int(min_size))
 
-    unclustered = [requests[i] for i, cluster in enumerate(cluster_assignments) if cluster == -1]
+    # CountVectorizer for cluster names with n-gram range
     vectorizer = CountVectorizer(ngram_range=(2, 3), stop_words='english')
 
     cluster_list = []
@@ -199,11 +191,12 @@ def analyze_unrecognized_requests(data_file, output_file, num_representatives, m
         r = [req for req, _ in reqs_embedding]
         e = [em for _, em in reqs_embedding]
         representatives = get_cluster_representatives(model, int(num_representatives), e, r, centroids[cluster])
-        cluster_name = extract_cluster_name(kw_model, r, vectorizer)
-        ngram_name = cluster_name_ngrams(r, vectorizer)
+        cluster_name,score, ngram_name,s2 = cluster_name_ngrams(r, vectorizer)
         cluster_list.append({
             "cluster_name": cluster_name,
-            "ngram_name": ngram_name,
+            "cluster_score": score,
+            "most_frequent": ngram_name,
+            "most_frequent_score": s2,
             "requests": r,
             "representatives": representatives
         })
