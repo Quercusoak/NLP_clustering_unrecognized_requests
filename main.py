@@ -9,8 +9,14 @@ from sentence_transformers import SentenceTransformer, SimilarityFunction
 import torch
 
 
-def cluster_name_ngrams(sentences, vectorizer):
-    X = vectorizer.fit_transform(sentences)
+def cluster_name_ngrams(sentences):
+    # CountVectorizer for cluster names with n-gram range
+    vectorizer = CountVectorizer(ngram_range=(2, 3), stop_words="english")
+    try:
+        X = vectorizer.fit_transform(sentences)
+    except:
+        vectorizer = CountVectorizer(ngram_range=(2, 3), stop_words=None)
+        X = vectorizer.fit_transform(sentences)
 
     # Get feature names (n-grams) and their counts, sort by first trigrams then bigrams
     ngram_counts = Counter(dict(zip(vectorizer.get_feature_names_out(), X.toarray().sum(axis=0))))
@@ -48,6 +54,7 @@ def get_cluster_representatives(model, num_representatives, embeddings, requests
 
     for _ in range(num_representatives - 1):
         candidate_similarities = relevance_scores[remaining_idx]
+        # model.similarity returns tensors, so they need torch.min
         target_similarities = torch.min(embedding_similarities[remaining_idx][:, selected_idx], dim=1).values
 
         # Select request by MMR score: balance between relevance and diversity
@@ -184,9 +191,6 @@ def analyze_unrecognized_requests(data_file, output_file, num_representatives, m
 
     clusters, centroids, cluster_assignments = create_clusters(embeddings, int(min_size))
 
-    # CountVectorizer for cluster names with n-gram range
-    vectorizer = CountVectorizer(ngram_range=(2, 3), stop_words=None)
-
     final_clusters = {}
     unclustered = []
     for i, cluster_id in enumerate(cluster_assignments):
@@ -198,7 +202,7 @@ def analyze_unrecognized_requests(data_file, output_file, num_representatives, m
     cluster_list = []
     for l, reqs in final_clusters.items():
         representatives = get_cluster_representatives(model, int(num_representatives), clusters[l], reqs, centroids[l])
-        cluster_name = cluster_name_ngrams(reqs, vectorizer)
+        cluster_name = cluster_name_ngrams(reqs)
         cluster_list.append({
             "cluster_name": cluster_name,
             "requests": reqs,
