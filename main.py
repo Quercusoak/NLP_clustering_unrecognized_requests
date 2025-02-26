@@ -1,4 +1,7 @@
 import json
+from collections import Counter
+
+from sklearn.feature_extraction.text import CountVectorizer
 
 from compare_clustering_solutions import evaluate_clustering
 import pandas as pd
@@ -8,12 +11,28 @@ from keybert import KeyBERT
 import torch
 
 
-def extract_cluster_name(kw_model, requests, embeddings):
-    # doc = " ".join(requests)
-    cluster_name = kw_model.extract_keywords(
-        requests, keyphrase_ngram_range=(1, 2), stop_words='english', top_n=1, doc_embeddings=embeddings)
+def extract_cluster_name(kw_model, sentences):
+    # Initialize CountVectorizer with n-gram range
+    vectorizer = CountVectorizer(ngram_range=(2, 3), stop_words='english')
+    X = vectorizer.fit_transform(sentences)
 
-    return cluster_name[0][0]
+    # Get feature names (n-grams) and their counts
+    ngram_counts = Counter(dict(zip(vectorizer.get_feature_names_out(), X.toarray().sum(axis=0))))
+    sorted_ngrams = sorted(ngram_counts.items(), key=lambda x: (-len(x[0].split()), -x[1]))
+
+    best = sorted_ngrams[0]
+
+    # Get the most frequent n-grams
+    most = ngram_counts.most_common(1)[0]
+    if most[1] > 3*(best[1]):
+        best = most
+
+    doc = " ".join(sentences)
+    cluster_name = kw_model.extract_keywords(
+        doc, vectorizer=vectorizer, top_n=1)
+    res = cluster_name[0][0]
+
+    return best[0]
 
 
 def get_cluster_representatives(model, num_representatives, embeddings, requests, centroid):
@@ -22,34 +41,32 @@ def get_cluster_representatives(model, num_representatives, embeddings, requests
     For each request calculate mmr - proximity to centroid vs. distance from other selected requests.
     """
     representatives = []
-    diversity = 0.7
+    diversity = 0.5
     embeddings = np.array(embeddings)
 
+    # Cosine similarity to centroid shows relevance to cluster
     relevance_scores = model.similarity(centroid, embeddings)[0]
+
+    # Cosine similarity of every request to all others in the cluster
     embedding_similarities = model.similarity(embeddings, embeddings)
 
     # Select request closest to the centroid
     selected_idx = [np.argmax(relevance_scores).item()]
     representatives.append(requests[selected_idx[0]])
 
-    # remaining_idx = list(set(range(len(requests))) - set(selected_idx))
     remaining_idx = [i for i in range(len(embeddings)) if i != selected_idx[0]]
+
+    sorted_indices = np.argsort(-relevance_scores)  # Negative sign for descending order
+    sorted_requests = [requests[i] for i in sorted_indices]
 
     # Diversity score is min similarity to selected requests
 
     for _ in range(num_representatives - 1):
         candidate_similarities = relevance_scores[remaining_idx]
-        a = embedding_similarities[remaining_idx][:, selected_idx]
+        # Get
         target_similarities = torch.min(embedding_similarities[remaining_idx][:, selected_idx], dim=1).values
 
-        # # Compute diversity score: min similarity to already selected requests
-        # diversity_scores = np.array([
-        #     min(model.similarity(embeddings[i], embeddings[selected_idx])[0])
-        #     for i in remaining_idx
-        # ])
-
         # Select request by MMR score: balance between relevance and diversity
-        # mmr_scores = (1 - diversity) * relevance_scores[remaining_idx] - diversity * diversity_scores
         mmr_scores = (1 - diversity) * candidate_similarities - diversity * target_similarities
         mmr_idx = remaining_idx[np.argmax(mmr_scores)]
 
@@ -57,7 +74,7 @@ def get_cluster_representatives(model, num_representatives, embeddings, requests
         representatives.append(requests[mmr_idx])
         remaining_idx.remove(mmr_idx)
 
-    return representatives
+    return representatives, sorted_requests
 
 
 def add_embedding_to_cluster(embeddings_cluster_assignment, requests_to_embeddings, clusters, centroids):
@@ -214,8 +231,8 @@ def analyze_unrecognized_requests(data_file, output_file, num_representatives, m
     for cluster, reqs_embedding in clusters.items():
         r = [req for req, _ in reqs_embedding]
         e = [em for _, em in reqs_embedding]
-        cluster_name = extract_cluster_name(kw_model, r, e)
-        representatives = get_cluster_representatives(model,num_representatives, e,r, centroids[cluster])
+        representatives,sorted_requests = get_cluster_representatives(model,num_representatives, e,r, centroids[cluster])
+        cluster_name = extract_cluster_name(kw_model, sorted_requests)
         cluster_list.append({
             "cluster_name": cluster_name,
             "requests": r,
