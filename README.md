@@ -1,6 +1,8 @@
 # Unrecognized Requests Clustering
 
-This project analyzes unrecognized text requests by clustering them based on their semantic embeddings. It uses state-of-the-art NLP models and clustering strategies to automatically group similar requests and extract representative sentences for each cluster.
+This project applies unsupervised learning methods to cluster unrecognized requests from users based on their semantic embeddings.  
+By clustering similar requests together, labeling the cluster and extracting representative sentences for it, the system identifies common themes and potential areas for improvement in intent recognition.
+
 
 ## Features
 
@@ -56,3 +58,20 @@ The script will:
 - Cluster the requests based on their semantic similarity.
 - Save the clustering results to the specified output file.
 - Evaluate the clustering solution by comparing it against an example solution.
+
+- 
+
+# NLP Clustering of Unrecognized Requests
+
+This project applies unsupervised learning methods to cluster unrecognized requests from users. By grouping similar requests together, the system identifies common themes and potential areas for improvement in intent recognition. The approach leverages modern NLP techniques to generate high-quality clusters with descriptive titles and representative examples.
+
+## Overview
+
+The workflow of the project is as follows:
+
+- Embed requests using SentenceTransformer.
+- Group requests into clusters based on cosine similarity.
+- Improves efficiency by halting clustering iterations when minimal changes are detected.
+- Assign fitting titles to clusters using n-grams frequency analysis.
+- Select diverse representative sentences for each cluster using Maximal Marginal Relevance (MMR).
+- Evaluate the clustering solution.
